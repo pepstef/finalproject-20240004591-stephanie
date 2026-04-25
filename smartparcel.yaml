@@ -1,0 +1,187 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: SmartParcel Cloud-Native Parcel Tracking System
+
+Parameters:
+  StudentId:
+    Type: String
+    AllowedPattern: '[a-zA-Z0-9-]+'
+
+Resources:
+
+  ParcelsTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: smartparcel-parcels-20240004591
+      AttributeDefinitions:
+        - {AttributeName: parcel_id, AttributeType: S}
+        - {AttributeName: status, AttributeType: S}
+      KeySchema:
+        - {AttributeName: parcel_id, KeyType: HASH}
+      BillingMode: PAY_PER_REQUEST
+      GlobalSecondaryIndexes:
+        - IndexName: status-index
+          KeySchema: [{AttributeName: status, KeyType: HASH}]
+          Projection: {ProjectionType: ALL}
+
+  PhotosBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: smartparcel-photos-20240004591
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault: {SSEAlgorithm: AES256}
+      PublicAccessBlockConfiguration:
+        {BlockPublicAcls: true, BlockPublicPolicy: true, IgnorePublicAcls: true, RestrictPublicBuckets: true}
+
+  EventsDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: smartparcel-events-dlq-20240004591
+
+  EventsQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: smartparcel-events-20240004591
+      RedrivePolicy:
+        {deadLetterTargetArn: !GetAtt EventsDLQ.Arn, maxReceiveCount: 3}
+
+  AlertsTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: smartparcel-alerts-20240004591
+
+  ApiLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: smartparcel-api-role-20240004591
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: ApiPerms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource:
+                  - !GetAtt ParcelsTable.Arn
+                  - !Sub '${ParcelsTable.Arn}/index/*'
+
+              - Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource:
+                  - !Sub '${PhotosBucket.Arn}/*'
+
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                Resource: !GetAtt EventsQueue.Arn
+
+  NotifierLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: smartparcel-notifier-role-20240004591
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: NotifierPerms
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                Resource: !GetAtt EventsQueue.Arn
+
+              - Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource: !Ref AlertsTopic
+
+  ApiFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: smartparcel-api-20240004591
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt ApiLambdaRole.Arn
+      Timeout: 30
+      MemorySize: 256
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({'status': 'ok'})
+              }
+
+  NotifierFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: smartparcel-notifier-20240004591
+      Runtime: python3.12
+      Handler: index.lambda_handler
+      Role: !GetAtt NotifierLambdaRole.Arn
+      Timeout: 30
+      Code:
+        ZipFile: |
+          import json
+          def lambda_handler(event, context):
+              print(event)
+              return {'statusCode': 200}
+
+  NotifierTrigger:
+    Type: AWS::Lambda::EventSourceMapping
+    Properties:
+      {EventSourceArn: !GetAtt EventsQueue.Arn, FunctionName: !Ref NotifierFunction, BatchSize: 5}
+
+  SmartParcelApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      {Name: SmartParcel-API-20240004591, EndpointConfiguration: {Types: [REGIONAL]}}
+
+  ErrorsAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: smartparcel-errors-20240004591
+      MetricName: Errors
+      Namespace: AWS/Lambda
+      Dimensions:
+        - {Name: FunctionName, Value: !Ref ApiFunction}
+      Statistic: Sum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 1
+      ComparisonOperator: GreaterThanOrEqualToThreshold
+      AlarmActions: [!Ref AlertsTopic]
+
+Outputs:
+  TableName: {Value: smartparcel-parcels-20240004591}
+  BucketName: {Value: smartparcel-photos-20240004591}
+  QueueUrl: {Value: !Ref EventsQueue}
+  TopicArn: {Value: !Ref AlertsTopic}
