@@ -1,0 +1,30 @@
+import json
+import boto3
+
+sns = boto3.client('sns')
+
+TOPIC_ARN = "arn:aws:sns:ap-southeast-2:943273444306:smartparcel-alerts-20240004591"
+
+
+def lambda_handler(event, context):
+
+    for record in event.get('Records', []):
+
+        try:
+            body = json.loads(record['body'])
+
+            message = f"Parcel {body['parcel_id']} is now {body['new_status']}"
+
+            sns.publish(
+                TopicArn=TOPIC_ARN,
+                Subject='SmartParcel Update',
+                Message=message
+            )
+            
+            print("Processed message successfully:", message)
+
+        except Exception as e:
+            print("Malformed message body:", record.get('body'))
+            print("Error:", str(e))
+
+    return {'statusCode': 200}
