@@ -5,7 +5,7 @@ name: Stephanie Malaiba // StudentID: 20240004591 // Studentemail: 20240004591@s
 Serverless delivery system for parcels using AWS services. Certain users have specific permissions and actions when dealing with the parcel. 
 
 ## HOW TO RUN
-#load_test.py 
+# load_test.py 
 - In CloudShell, nano load_test.py to see the full code 
 - To run, python3 load_test.py 
 
